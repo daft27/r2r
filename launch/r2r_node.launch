@@ -1,0 +1,10 @@
+<launch>
+  <node pkg="r2r" type="r2r_node" name="r2r" output="screen">
+    <!--param name="broadcast_addr" value="pggg2" /-->
+    <rosparam param="topics_list">
+    tmp/3: 1
+    tma: 1
+    </rosparam>
+   <param name="topics_file" value="$(find r2r)/config/topics.json"/>
+  </node>
+</launch>

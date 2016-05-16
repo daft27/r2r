@@ -1,0 +1,40 @@
+{
+	"topics": [
+	{ 
+		"name": "/navigation/path", 
+		"qoslvl": 3
+	},{
+		"name": "/fix",
+		"qoslvl": 2
+	},{
+		"name": "/fix_16",
+		"qoslvl": 3
+	},{
+		"name": "/fix_18",
+		"qoslvl": 3
+	},{
+		"name": "/gps_16",
+		"qoslvl": 3
+	},{
+		"name": "/gps_18",
+		"qoslvl": 3
+	},{
+		"name": "/cameraL/imageL/compressed",
+		"qoslvl": 3
+	},{
+		"name": "/cameraR/imageR/compressed",
+		"qoslvl": 3
+	},{
+		"name": "/controller/safety",
+		"qoslvl": 2
+	},{
+		"name": "/scan",
+		"qoslvl": 3
+	},{
+		"name": "/imu/data",
+		"qoslvl": 3
+	},{
+		"name": "/cmd_vel_mux/cmd_vel",
+		"qoslvl": 1
+	}]
+}
