@@ -23,7 +23,7 @@ ExternalProject_Add(libzmq_build
     SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third/libzmq
     #GIT_REPOSITORY https://github.com/zeromq/libzmq.git
     #UPDATE_COMMAND ""
-	    PATCH_COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/third/libzmq/autogen.sh
+    PATCH_COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/third/libzmq/autogen.sh
     CONFIGURE_COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/third/libzmq/configure --with-pgm=libpgm-5.1-0 --prefix=${CATKIN_DEVEL_PREFIX}
     BUILD_COMMAND ${MAKE}
     BUILD_IN_SOURCE 0

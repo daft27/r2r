@@ -323,6 +323,7 @@ class RemoteExchangeServer
 
 	void SetupDiscovery(const std::string & broadcast_addr, const std::string & broadcast_localaddr)
 	{
+		std::cout << " [RES] Setup discovery publisher" << std::endl;
 		// make publisher
 		socket_ctrl_pub_ = make_unique<zmq::socket_t>(context_, ZMQ_PUB);
 		{
@@ -332,36 +333,52 @@ class RemoteExchangeServer
 		//	int64_t rate = 1024;
 		//	socket_ctrl_pub_->setsockopt(ZMQ_RATE, &rate, sizeof(rate));
 		}
+		std::cout << " [RES]    at " << broadcast_addr << std::endl;
 		socket_ctrl_pub_->bind(broadcast_addr.c_str());
+		std::cout << " [RES]    at " << broadcast_localaddr << std::endl;
 		socket_ctrl_pub_->bind(broadcast_localaddr.c_str());
 
+		std::cout << " [RES] Setup discovery subscriber" << std::endl;
 		// make subscriber
 		socket_ctrl_sub_ = make_unique<zmq::socket_t>(context_, ZMQ_SUB);
 		socket_ctrl_sub_->setsockopt(ZMQ_SUBSCRIBE,"", 0);
+		std::cout << " [RES]    at " << broadcast_addr << std::endl;
 		socket_ctrl_sub_->connect(broadcast_addr.c_str());
+		std::cout << " [RES]    at " << broadcast_localaddr << std::endl;
 		socket_ctrl_sub_->connect(broadcast_localaddr.c_str());
 	}
 
 	void SetupMulticast()
 	{
-		
+		std::string addr = "udp://239.192.1.1:6666";
+
+		std::cout << " [RES] Setup multicast publisher" << std::endl;	
 		socket_radio_ = make_unique<zmq::socket_t>(context_, ZMQ_RADIO);
-		socket_radio_->bind("udp://239.192.1.1:6666");
+
+		std::cout << " [RES]    at " << addr << std::endl;
+		socket_radio_->connect(addr);
 		{
 			// see https://tools.ietf.org/html/rfc791
 			int tos = 0x2e << 2; // EF (DSCP 101 110) or 46
 			socket_radio_->setsockopt(ZMQ_TOS, &tos, sizeof(tos));
 		}
 
+		std::cout << " [RES] Setup multicast subscriber" << std::endl;	
 		socket_dish_ = make_unique<zmq::socket_t>(context_, ZMQ_DISH);
-		socket_dish_->connect("udp://239.192.1.1:6666");
+
+		std::cout << " [RES]    at " << addr << std::endl;
+		socket_dish_->bind(addr);
 		zmq_join((void*) *(socket_dish_.get()), "");
 	}
 
 	void SetupBulk()
 	{
+		std::string addr = "tcp://*:6667";
+		std::cout << " [RES] Setup bulk" << std::endl;
+
 		socket_bulk_pub_ = make_unique<zmq::socket_t>(context_, ZMQ_PUB);
-		socket_bulk_pub_->bind("tcp://*:6667");
+		std::cout << " [RES]    at " << addr << std::endl;
+		socket_bulk_pub_->bind(addr);
 		{
 			int limit = 2;
 			socket_bulk_pub_->setsockopt(ZMQ_SNDHWM, &limit, sizeof(limit));
@@ -555,7 +572,7 @@ int main(int argc, char ** argv)
 	ros::init(argc, argv, "r2r");	
 	ros::NodeHandle nh("~");
 
-	std::string broadcast_addr = nh.param<std::string>("broadcast_addr", "epgm://eth0;239.192.1.1:5555");
+	std::string broadcast_addr = nh.param<std::string>("broadcast_addr", "epgm://239.192.1.1:5555");
 	std::string broadcast_localaddr = nh.param<std::string>("broadcast_localaddr", "ipc:///tmp/localfeed0");
 	std::string topics_file = nh.param<std::string>("topics_file","");
 
