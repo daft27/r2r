@@ -1,3 +1,4 @@
+#define ZMQ_BUILD_DRAFT_API
 #include <zmq.hpp>
 #include <ros/ros.h>
 
