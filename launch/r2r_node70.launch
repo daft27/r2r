@@ -1,0 +1,6 @@
+<launch>
+  <node pkg="r2r" type="r2r_node" name="r2r" output="screen">
+    <param name="broadcast_addr" value="epgm://192.168.3.70;239.192.1.1:5555" />
+   <param name="topics_file" value="$(find r2r)/config/topics.json"/>
+  </node>
+</launch>

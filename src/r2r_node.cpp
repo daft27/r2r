@@ -572,7 +572,7 @@ int main(int argc, char ** argv)
 	ros::init(argc, argv, "r2r");	
 	ros::NodeHandle nh("~");
 
-	std::string broadcast_addr = nh.param<std::string>("broadcast_addr", "epgm://239.192.1.1:5555");
+	std::string broadcast_addr = nh.param<std::string>("broadcast_addr", "epgm://eth0;239.192.1.1:5555");
 	std::string broadcast_localaddr = nh.param<std::string>("broadcast_localaddr", "ipc:///tmp/localfeed0");
 	std::string topics_file = nh.param<std::string>("topics_file","");
 
