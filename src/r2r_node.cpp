@@ -46,6 +46,8 @@
 	else if(type == "nav_msgs/Path")		func<nav_msgs::Path>(__VA_ARGS__);
 
 
+const int kServiceBufferSize = 10;
+
 
 template<typename T, typename ...Args>
 std::unique_ptr<T> make_unique( Args&& ...args )
@@ -68,12 +70,17 @@ struct ServiceList
 	int				time_s;
 	int				time_ns;
 
-	int				msg1;
-	int				msg2;
-	int				msg3;
+	int				bytes_sent;
 
+	int				bytes_sent_qos1;
+	int				bytes_sent_qos2;
+	int				bytes_sent_qos3;
 
-	MSGPACK_DEFINE(topics, types, qoss, host, time_s, time_ns, msg1, msg2, msg3);
+	int				bytes_recv;
+	int				bytes_recv_qos1;
+	int				bytes_recv_qos2;
+	int				bytes_recv_qos3;
+	MSGPACK_DEFINE(topics, types, qoss, host, time_s, time_ns, bytes_sent, bytes_sent_qos1, bytes_sent_qos2, bytes_sent_qos3);
 };
 
 
@@ -139,6 +146,8 @@ class LocalExchangeServer
 	std::string 						host_;
 	std::map<std::string, Topic> 				topics_;
 	std::map<std::string, std::map<std::string, Topic>> 	remote_topics_;
+	std::map<std::string, ros::Publisher>			remote_reception_pubs_;
+
 	std::function<ForwardingCallback> 			forwardFunc_ = nullptr;
 
 	void Forward(const MessageContainer & mc, int qos)
@@ -221,6 +230,21 @@ public:
 		topics_[topic] = t;
 	}
 
+	void PublishRemoteReception(const std::string & host, int qoslvl)
+	{
+		auto & pub = remote_reception_pubs_[host];
+
+		if (pub == nullptr) {
+			pub = nh_.advertise<std_msgs::Int32>(host + "/reception", 2, true);
+			OUT(std::cout << " [LES] New reception publisher at " << host << "/reception" << std::endl);
+		}
+
+		std_msgs::Int32 msg;
+		msg.data = qoslvl;
+
+		pub.publish(msg);
+	}
+
 	void DebugPrint()
 	{
 		for(auto it : topics_) {
@@ -297,10 +321,17 @@ class RemoteExchangeServer
 	int				msgs_sent_qos2_ = 0;
 	int				msgs_sent_qos3_ = 0;
 
+	int				bytes_sent_qos1_ = 0;
+	int				bytes_sent_qos2_ = 0;
+	int				bytes_sent_qos3_ = 0;
+
 	int				bytes_recv_ = 0;
 	int				bytes_sent_ = 0;
 
 	std::function<ForwardingCallback> forwardFunc_ = nullptr;
+
+	std::map<std::string, std::deque<ServiceList> > services_;
+
 
 	void SubscribeToBulkRemote(const std::string & host)
 	{
@@ -392,6 +423,56 @@ class RemoteExchangeServer
 		socket_bulk_sub_->setsockopt(ZMQ_SUBSCRIBE,"", 0);
 	}
 
+	void RecordBytesRecv(int bytes, const std::string & host, int qoslvl)
+	{
+		bytes_recv_+= bytes;
+
+		auto serviceListsIter = services_.find(host);
+		if (serviceListsIter != services_.end()) {
+			auto &lastSL = serviceListsIter->second.back();
+			lastSL.bytes_recv += bytes;
+
+			switch(qoslvl) {
+				case 0: lastSL.bytes_recv_qos1 += bytes; break;
+				case 1: lastSL.bytes_recv_qos2 += bytes; break;
+				case 2: lastSL.bytes_recv_qos3 += bytes; break;
+			}
+		}
+		
+	}
+
+	int GetReceptionLevel(const std::string & host) const
+	{
+		auto serviceListsIter = services_.find(host);
+		if (serviceListsIter != services_.end()) {
+			const auto & list = serviceListsIter->second;
+
+			const int listSize = list.size();
+			if (listSize >= 2) {
+
+				const auto & last1 = list[listSize-1];
+				const auto & last2 = list[listSize-2];
+
+				int lastSentBytesQOS1 = last1.bytes_sent_qos1 - last2.bytes_sent_qos1;
+				int lastSentBytesQOS2 = last1.bytes_sent_qos2 - last2.bytes_sent_qos2;
+				int lastSentBytesQOS3 = last1.bytes_sent_qos3 - last2.bytes_sent_qos3;
+
+				int lastRecvBytesQOS1 = last1.bytes_recv_qos1;
+				int lastRecvBytesQOS2 = last1.bytes_recv_qos2;
+				int lastRecvBytesQOS3 = last1.bytes_recv_qos3;
+				
+				double qos1P = lastRecvBytesQOS1 ?  ((double) lastSentBytesQOS1 / lastRecvBytesQOS1) : 1;
+				double qos2P = lastRecvBytesQOS2 ?  ((double) lastSentBytesQOS2 / lastRecvBytesQOS2) : 1;
+				double qos3P = lastRecvBytesQOS3 ?  ((double) lastSentBytesQOS3 / lastRecvBytesQOS3) : 1;
+
+				return (int) ceil(qos1P * 30 + qos2P * 50 + qos3P * 20);
+			}
+
+		}
+
+		return -1;
+	}
+
 public:
 
 	RemoteExchangeServer() : context_(1) { }
@@ -422,13 +503,15 @@ public:
 
 
 		msgs_sent_qos1_++;
+		bytes_sent_qos1_ += buffer.size();
 		bytes_sent_+= buffer.size();
 	}
 
 
 	using ServiceCallback = void(const std::string & topic, const std::string & type, const std::string & host);
+	using ServiceCallback2 = void(const std::string & host, int qoslvl);
 
-	void RecvServiceBroadcast(std::function<ServiceCallback> f = nullptr)
+	void RecvServiceBroadcast(std::function<ServiceCallback> f = nullptr, std::function<ServiceCallback2> f2 = nullptr)
 	{
 		zmq::message_t request;
 		if(socket_ctrl_sub_->recv (&request, ZMQ_DONTWAIT)) {
@@ -448,11 +531,30 @@ public:
 					f(sl.topics[i], sl.types[i], sl.host);
 				}
 			}
-
 			
-
 			SubscribeToBulkRemote(sl.host);
-			bytes_recv_+= request.size();
+			RecordBytesRecv(request.size(), sl.host, 0);
+
+			int reception = GetReceptionLevel(sl.host);
+
+			if(f2)
+				f2(sl.host, reception);
+
+			//PublishRemoteReception(sl.host, reception);
+			OUT(std::cout << "   reception: " << reception << std::endl);
+
+			// add to buffer
+			sl.bytes_recv = 0;
+			sl.bytes_recv_qos1 = 0;
+			sl.bytes_recv_qos2 = 0;
+			sl.bytes_recv_qos3 = 0;
+
+			auto & serviceLists = services_[sl.host];
+			serviceLists.push_back(sl);
+
+			if (serviceLists.size() > kServiceBufferSize) {
+				serviceLists.pop_front();
+			}
 		}
 
 	}
@@ -472,6 +574,7 @@ public:
 			std::cerr << " [MUDP] DROPPED " << buffer.size() << std::endl;
 
 		msgs_sent_qos2_++;
+		bytes_sent_qos2_ += buffer.size();
 		bytes_sent_+= buffer.size();
 	}
 
@@ -491,7 +594,7 @@ public:
 
 			Forward(mc, 1);
 		
-			bytes_recv_+= request.size();
+			RecordBytesRecv(request.size(), mc.host, 1);
 		}
 	}
 
@@ -509,6 +612,7 @@ public:
 			std::cerr << " [BTCP] DROPPED " << buffer.size() << std::endl;
 
 		msgs_sent_qos3_++;
+		bytes_sent_qos3_ += buffer.size();
 		bytes_sent_+= buffer.size();
 	}
 
@@ -528,7 +632,7 @@ public:
 
 			Forward(mc, 2);
 
-			bytes_recv_+= request.size();
+			RecordBytesRecv(request.size(), mc.host, 2);
 		}
 	}
 
@@ -539,6 +643,9 @@ public:
 	int GetMsgsSentQOS1() const { return msgs_sent_qos1_; }
 	int GetMsgsSentQOS2() const { return msgs_sent_qos2_; }
 	int GetMsgsSentQOS3() const { return msgs_sent_qos3_; }
+	int GetBytesSentQOS1() const { return bytes_sent_qos1_; }
+	int GetBytesSentQOS2() const { return bytes_sent_qos2_; }
+	int GetBytesSentQOS3() const { return bytes_sent_qos3_; }
 
 	void Poll(std::function<ServiceCallback> f)
 	{
@@ -548,7 +655,7 @@ public:
 		        { (void*) *socket_bulk_sub_, 0, ZMQ_POLLIN, 0 }
 		    };
 
-		zmq::poll (&items [0], 3, 5000);
+		zmq::poll (&items [0], 3, 1000);
 
 		if(items[0].revents & ZMQ_POLLIN) {
 			RecvServiceBroadcast(f);
@@ -575,6 +682,7 @@ int main(int argc, char ** argv)
 	std::string broadcast_addr = nh.param<std::string>("broadcast_addr", "epgm://eth0;239.192.1.1:5555");
 	std::string broadcast_localaddr = nh.param<std::string>("broadcast_localaddr", "ipc:///tmp/localfeed0");
 	std::string topics_file = nh.param<std::string>("topics_file","");
+	bool self_subscribe = nh.param<bool>("self_subscribe", false);
 
 	char hostname[HOST_NAME_MAX];
 	gethostname(hostname, sizeof(hostname));
@@ -668,7 +776,9 @@ int main(int argc, char ** argv)
 				nsecs = time.nsec;
 			}
 
-			ServiceList sl = {topics_list, types_list, qos_list, les.GetHost(), secs, nsecs, res.GetMsgsSentQOS1(), res.GetMsgsSentQOS2(), res.GetMsgsSentQOS3()};
+			ServiceList sl = {topics_list, types_list, qos_list, les.GetHost(), secs, nsecs, 
+				res.GetBytesSent(), res.GetBytesSentQOS1(), res.GetBytesSentQOS2(), res.GetBytesSentQOS3(),
+				0, 0, 0, 0};
 
 			res.SendServiceBroadcast(sl);
 		});
@@ -677,10 +787,17 @@ int main(int argc, char ** argv)
 		ros::Timer timer_recv = nh.createTimer(ros::Duration(0.005), [&](const ros::TimerEvent& te) 
 		{
 
-			res.RecvServiceBroadcast([&les](const std::string & topic, const std::string & type, const std::string & host) 
+			res.RecvServiceBroadcast([&les, self_subscribe](const std::string & topic, const std::string & type, const std::string & host) 
 			{
 				// subscribe to new topics
-				les.PublishRemoteRosTopic(topic, type, host);
+				if (self_subscribe || host != les.GetHost())
+					les.PublishRemoteRosTopic(topic, type, host);
+			}, 
+			[&les, self_subscribe](const std::string & host, int qoslvl)
+			{
+				if (self_subscribe || host != les.GetHost())
+					les.PublishRemoteReception(host, qoslvl);
+
 			});
 	
 			res.RecvMulticast();
