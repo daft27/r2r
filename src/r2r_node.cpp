@@ -129,6 +129,7 @@ struct MessageContainer
 };
 
 using ForwardingCallback = void(const MessageContainer &, int qos);
+using SubscriberCheckCallback = void(const std::string & host, const std::string & topic, int change, int current, int qoslvl);
 
 // listen to topics that need to be published elsewhere
 class LocalExchangeServer
@@ -140,6 +141,7 @@ class LocalExchangeServer
 		ros::Publisher	pub;
 		std::string	type;
 		int		qoslvl = 0;
+		int		num_local_subscribers = 0;
 	};
 
 	ros::NodeHandle						nh_;
@@ -196,7 +198,7 @@ class LocalExchangeServer
 	}
 
 	template<typename T>
-	void PublishRemoteRosTopic(const std::string & topic, const std::string & host)
+	void PublishRemoteRosTopic(const std::string & topic, const std::string & host, const int qoslvl)
 	{
 		try 
 		{ 
@@ -206,6 +208,7 @@ class LocalExchangeServer
 				std::cout << " [LES] publishing " << topic << " from " << host << std::endl;
 				auto pub = nh_.advertise<T>(host + topic, 5);
 				t.pub = pub;
+				t.qoslvl = qoslvl;
 			}
 		} 
 		catch (std::exception e) 
@@ -222,6 +225,29 @@ public:
 	std::string GetHost() const { return host_; }
 
 	void SetForward(std::function<ForwardingCallback> f) {	forwardFunc_ = f; }
+
+	void SubscriberCheck(std::function<SubscriberCheckCallback> f)
+	{
+		for(auto & host_it : remote_topics_) {
+			std::string host = host_it.first;
+
+			for(auto & it : host_it.second) {
+
+				auto & t = it.second;
+
+				if(t.pub) {
+					int difference = t.pub.getNumSubscribers() - t.num_local_subscribers;
+
+					if(difference != 0) {
+						// update and fire callback
+						t.num_local_subscribers += difference;
+						std::cout << " [LES] Subscriber change at /" << host << it.first << ". " << difference << ", now " << t.num_local_subscribers << std::endl;
+						f(host_it.first, it.first, difference, t.num_local_subscribers, t.qoslvl);
+					}
+				}
+			}
+		}
+	}
 
 	void AddPublishedTopic(const std::string & topic, int qoslvl)
 	{
@@ -261,10 +287,10 @@ public:
 
 
 
-	void PublishRemoteRosTopic(const std::string & topic, const std::string & type, const std::string & host)
+	void PublishRemoteRosTopic(const std::string & topic, const std::string & type, const std::string & host, const int qoslvl)
 	{
 		// map type strings to C++ types
-		TYPE_CONVERSION(PublishRemoteRosTopic, topic, host);
+		TYPE_CONVERSION(PublishRemoteRosTopic, topic, host, qoslvl);
 	}
 
 
@@ -402,7 +428,7 @@ class RemoteExchangeServer
 		zmq_join((void*) *(socket_dish_.get()), "");
 	}
 
-	void SetupBulk()
+	void SetupBulk(const bool receiveAll)
 	{
 		std::string addr = "tcp://*:6667";
 		std::cout << " [RES] Setup bulk" << std::endl;
@@ -420,7 +446,9 @@ class RemoteExchangeServer
 		}
 
 		socket_bulk_sub_ = make_unique<zmq::socket_t>(context_, ZMQ_SUB);
-		socket_bulk_sub_->setsockopt(ZMQ_SUBSCRIBE,"", 0);
+
+		if (receiveAll)
+			socket_bulk_sub_->setsockopt(ZMQ_SUBSCRIBE,"", 0);
 	}
 
 	void RecordBytesRecv(int bytes, const std::string & host, int qoslvl)
@@ -480,11 +508,11 @@ public:
 	int GetBytesSent() const { return bytes_sent_; }
 	int GetBytesRecv() const { return bytes_recv_; }
 
-	void Setup(const std::string & broadcast_addr, const std::string & broadcast_localaddr)
+	void Setup(const std::string & broadcast_addr, const std::string & broadcast_localaddr, bool receiveAll)
 	{
 		SetupDiscovery(broadcast_addr, broadcast_localaddr);
 		SetupMulticast();
-		SetupBulk();
+		SetupBulk(receiveAll);
 	}
 
 
@@ -508,7 +536,7 @@ public:
 	}
 
 
-	using ServiceCallback = void(const std::string & topic, const std::string & type, const std::string & host);
+	using ServiceCallback = void(const std::string & topic, const std::string & type, const std::string & host, const int qoslvl);
 	using ServiceCallback2 = void(const std::string & host, int qoslvl);
 
 	void RecvServiceBroadcast(std::function<ServiceCallback> f = nullptr, std::function<ServiceCallback2> f2 = nullptr)
@@ -528,7 +556,7 @@ public:
 			for(int i = 0 ; i < sl.topics.size(); i++ ) {
 				// std::cout << " < " << sl.topics[i] << "<" << sl.types[i] << "> ( " << sl.qoss[i] << " )" << std::endl;
 				if(f) {
-					f(sl.topics[i], sl.types[i], sl.host);
+					f(sl.topics[i], sl.types[i], sl.host, sl.qoss[i]);
 				}
 			}
 			
@@ -603,8 +631,12 @@ public:
 		msgpack::sbuffer buffer;
 		msgpack::pack(&buffer, data);
 
-		zmq::message_t msg (buffer.size());
-		memcpy (msg.data (), buffer.data(), buffer.size());
+		const size_t topichash = std::hash<std::string>()(data.host + data.topic);
+		const size_t topicsize = sizeof(size_t);
+
+		zmq::message_t msg (buffer.size() + topicsize);
+		memcpy (msg.data(), &topichash, topicsize);
+		memcpy ((char*) msg.data() + topicsize, buffer.data(), buffer.size());
 
 		if(socket_bulk_pub_->send(msg, ZMQ_NOBLOCK))
 			OUT(std::cout << " [BTCP] Sent " << buffer.size() << std::endl);
@@ -616,14 +648,37 @@ public:
 		bytes_sent_+= buffer.size();
 	}
 
+	void ChannelSubscribe(int qoslvl, size_t topic)
+	{
+		OUT(std::cout << "Subscribed" << std::endl);
+		switch(qoslvl) 
+		{
+			case 2: break;
+			case 3: socket_bulk_sub_->setsockopt(ZMQ_SUBSCRIBE, &topic, sizeof(topic)); break;
+		}
+	}
+
+	void ChannelUnsubscribe(int qoslvl, size_t topic)
+	{
+		OUT(std::cout << "Unsubscribed" << std::endl);
+		switch(qoslvl) 
+		{
+			case 2: break;
+			case 3: socket_bulk_sub_->setsockopt(ZMQ_UNSUBSCRIBE, &topic, sizeof(topic)); break;
+		}
+	}
+
+
 	void RecvBulk()
 	{
 		zmq::message_t request;
 		while(socket_bulk_sub_->recv (&request, ZMQ_DONTWAIT)) {
 			OUT(std::cout << " [BTCP] Recv " << request.size() << std::endl);
 
+			const size_t topicsize = sizeof(size_t);
+
 			msgpack::unpacked result;
-			msgpack::unpack(&result, (const char*) request.data(), request.size());
+			msgpack::unpack(&result, (const char*) request.data() + topicsize, request.size() - topicsize);
 
 			msgpack::object obj = result.get();
 			MessageContainer mc = obj.as<MessageContainer>();
@@ -683,6 +738,7 @@ int main(int argc, char ** argv)
 	std::string broadcast_localaddr = nh.param<std::string>("broadcast_localaddr", "ipc:///tmp/localfeed0");
 	std::string topics_file = nh.param<std::string>("topics_file","");
 	bool self_subscribe = nh.param<bool>("self_subscribe", false);
+	bool receive_all = nh.param<bool>("receive_all", false);
 
 	char hostname[HOST_NAME_MAX];
 	gethostname(hostname, sizeof(hostname));
@@ -763,7 +819,7 @@ int main(int argc, char ** argv)
 
 	try 
 	{
-		res.Setup(broadcast_addr, broadcast_localaddr);
+		res.Setup(broadcast_addr, broadcast_localaddr, receive_all);
 
 		// send out service messages		
 		ros::Timer timer_heartbeat = nh.createTimer(ros::Duration(3.0), [&](const ros::TimerEvent& te)  
@@ -787,11 +843,11 @@ int main(int argc, char ** argv)
 		ros::Timer timer_recv = nh.createTimer(ros::Duration(0.005), [&](const ros::TimerEvent& te) 
 		{
 
-			res.RecvServiceBroadcast([&les, self_subscribe](const std::string & topic, const std::string & type, const std::string & host) 
+			res.RecvServiceBroadcast([&les, self_subscribe](const std::string & topic, const std::string & type, const std::string & host, const int qoslvl) 
 			{
 				// subscribe to new topics
 				if (self_subscribe || host != les.GetHost())
-					les.PublishRemoteRosTopic(topic, type, host);
+					les.PublishRemoteRosTopic(topic, type, host, qoslvl);
 			}, 
 			[&les, self_subscribe](const std::string & host, int qoslvl)
 			{
@@ -804,6 +860,21 @@ int main(int argc, char ** argv)
 
 			res.RecvBulk();
 		});
+
+		// check for new messages over network
+		ros::Timer timer_subcheck = nh.createTimer(ros::Duration(1.0), [&](const ros::TimerEvent& te) 
+		{
+			les.SubscriberCheck([&res](const std::string & host, const std::string & topic, int change, int current, int qoslvl)
+			{
+				const size_t topichash = std::hash<std::string>()(host + topic);
+				if(change > 0 && current == 1)
+					res.ChannelSubscribe(qoslvl, topichash);
+				else if(change < 0 && current == 0)
+					res.ChannelUnsubscribe(qoslvl, topichash);
+			});
+
+		});
+
 
 		ros::spin();
 	}
