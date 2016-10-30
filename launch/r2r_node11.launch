@@ -1,0 +1,7 @@
+<launch>
+  <node pkg="r2r" type="r2r_node" name="r2r" output="screen">
+    <param name="broadcast_addr" value="epgm://192.168.3.11;239.192.1.1:5555" />
+   <param name="topics_file" value="$(find r2r)/config/uav-topics.json"/>
+   <!--remap from="/r2r/keyboard_teleop/cmd_vel" to="/keyboard_teleop/cmd_vel"/-->
+  </node>
+</launch>
