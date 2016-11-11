@@ -1,0 +1,19 @@
+{
+	"topics": [
+	{ 
+		"name": "/navigation/path", 
+		"qoslvl": 3
+	},{
+		"name": "/mavros/global_position/global",
+		"qoslvl": 2
+	},{
+		"name": "/mavros/global_postion/local",
+		"qoslvl": 2
+	},{
+		"name": "/mavros/state",
+		"qoslvl": 2
+	},{
+		"name": "/mavros/setpoint_velocity/cmd_vel",
+		"qoslvl": 1
+	}]
+}
