@@ -10,12 +10,6 @@
 		"name": "/mavros/global_postion/local",
 		"qoslvl": 2
 	},{
-		"name": "/usb_cam/left/image_raw/compressed",
-		"qoslvl": 3
-	},{
-		"name": "/usb_cam/right/image_raw/compressed",
-		"qoslvl": 3
-	},{
 		"name": "/mavros/state",
 		"qoslvl": 2
 	},{
