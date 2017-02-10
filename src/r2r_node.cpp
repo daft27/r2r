@@ -4,6 +4,8 @@
 
 #include <ros/master.h>
 
+#include <ros/topic_manager.h>
+
 #include <msgpack.hpp>
 
 #include <iostream>
@@ -14,6 +16,7 @@
 #include <limits.h>
 
 #include <std_msgs/Int32.h>
+#include <std_msgs/String.h>
 #include <sensor_msgs/NavSatFix.h>
 #include <sensor_msgs/LaserScan.h>
 #include <sensor_msgs/Imu.h>
@@ -37,6 +40,7 @@
 
 #define TYPE_CONVERSION(func, ...)  \
 	if(type == "std_msgs/Int32") 		func<std_msgs::Int32>(__VA_ARGS__);\
+	else if(type == "std_msgs/String") 		func<std_msgs::String>(__VA_ARGS__);\
 	else if(type == "sensor_msgs/NavSatFix") 		func<sensor_msgs::NavSatFix>(__VA_ARGS__);\
 	else if(type == "sensor_msgs/LaserScan")	func<sensor_msgs::LaserScan>(__VA_ARGS__);\
 	else if(type == "sensor_msgs/Imu")		func<sensor_msgs::Imu>(__VA_ARGS__);\
@@ -155,7 +159,7 @@ class LocalExchangeServer
 	void Forward(const MessageContainer & mc, int qos)
 	{
 		if(forwardFunc_) {
-			OUT(std::cout << " [LES] Forwarding " << mc.type << std::endl);
+			OUT(std::cout << " [LES] Forwarding " << mc.type << " from " << mc.host << std::endl);
 			forwardFunc_(mc, qos);
 		}
 	}
@@ -296,14 +300,36 @@ public:
 
 	void SendToROS(const MessageContainer & mc)
 	{
-		OUT(std::cout << " [LES] Relayed to ROS " << mc.host << "/" << mc.topic << std::endl);
+		OUT(std::cout << " [LES] Relayed to ROS " << mc.host << mc.topic << std::endl);
 
 		const auto & type = mc.type;
 		const auto & host = mc.host;
 		const auto & topic = mc.topic;
 
+		const auto & rostopic = nh_.resolveName(host + topic); //std::string("/r2r/") + host + topic;
+
+		const auto pubptr = ros::TopicManager::instance()->lookupPublication(rostopic);
+
+		if(pubptr == NULL) {
+			OUT(std::cout << " waiting for publisher" << std::endl);
+			return;
+		}
+
+		// direct injection
+		ros::SerializedMessage m;
+
+		ros::TopicManager::instance()->publish(rostopic, [&]() -> ros::SerializedMessage {
+				ros::SerializedMessage m2;
+				uint32_t len = mc.payload.size();
+				m2.num_bytes = len + 4;
+				m2.buf.reset(new uint8_t[m2.num_bytes]);
+				memcpy(&m2.buf[0], &len, sizeof(len));
+				memcpy(&m2.buf[4], &mc.payload[0], len);
+				return m2;
+		}, m );
+
 		// map type strings to C++ types
-		TYPE_CONVERSION(SendROSMessage, topic, host, mc);
+//		TYPE_CONVERSION(SendROSMessage, topic, host, mc);
 	}
 
 	template<typename T>
@@ -372,7 +398,7 @@ class RemoteExchangeServer
 	void Forward(const MessageContainer & mc, int qos)
 	{
 		if(forwardFunc_) {
-			OUT(std::cout << " [RES] Forwarding " << mc.type << std::endl);
+			OUT(std::cout << " [RES] Forwarding " << mc.type << " from " << mc.host << std::endl);
 			forwardFunc_(mc, qos);
 
 		}
